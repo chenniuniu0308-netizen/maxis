@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>粉丝点歌管理（用户名密码登录）</title>
+  <style>
+    body { font-family: sans-serif; max-width: 700px; margin: auto; }
+    h1 { text-align: center; }
+    input, button { padding: 6px; margin: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 5px; text-align: center; }
+    .actions button { margin: 0 2px; }
+    #loginSection { text-align: center; margin-bottom: 10px; }
+    #userInfo { text-align: right; margin: 10px 0; }
+  </style>
+</head>
+<body>
+
+<h1>粉丝点歌管理（用户名密码登录）</h1>
+
+<div id="loginSection">
+  用户名：<input id="usernameInput" type="text" />
+  密码：<input id="passwordInput" type="password" />
+  <button onclick="login()">登录</button>
+  <button onclick="logout()" style="display:none;">登出</button>
+</div>
+
+<div id="userInfo">未登录</div>
+
+<div id="adminControls" style="display:none;">
+  <div>
+    <input id="fanId" placeholder="粉丝ID" />
+    <input id="initialCount" type="number" placeholder="初始剩余次数" />
+    <button onclick="addFan()">添加粉丝</button>
+  </div>
+
+  <div>
+    <input type="file" id="excelFile" accept=".xlsx,.xls,.csv" />
+    <button onclick="importExcel()">从Excel导入</button>
+  </div>
+
+  <div>
+    <button onclick="clearAllData()">一键清空数据</button>
+    <button onclick="undo()">撤销</button>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>序号</th><th>粉丝ID</th><th>剩余次数</th><th>操作</th></tr>
+  </thead>
+  <tbody id="fanTable"></tbody>
+</table>
+
+<!-- 引入 SheetJS 库 -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getDatabase, ref, set, get, remove, onValue } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+
+  // Firebase 配置
+  const firebaseConfig = {
+    apiKey: "AIzaSyCneCJswaZKgFR0T8IWA3U8kGbxMTx5kI4",
+    authDomain: "fans-songlist.firebaseapp.com",
+    databaseURL: "https://fans-songlist-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "fans-songlist",
+    storageBucket: "fans-songlist.firebasestorage.app",
+    messagingSenderId: "1058959474522",
+    appId: "1:1058959474522:web:d63ca91ecf70122d32bd63"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  const userInfoDiv = document.getElementById("userInfo");
+  const adminControlsDiv = document.getElementById("adminControls");
+  const loginSection = document.getElementById("loginSection");
+
+  let isAdmin = false;
+  let lastAction = null; // 用于存储最近的操作，以支持回撤
+
+  // 渲染粉丝数据并按剩余次数从高到低排序
+  function renderTable(data) {
+    const tbody = document.getElementById("fanTable");
+    tbody.innerHTML = "";
+    let index = 1; // 序号从1开始
+
+    // 将数据按剩余次数降序排序
+    const sortedData = Object.keys(data)
+      .map(id => ({ id, count: data[id]?.count ?? 0 })) // 转换为数组格式
+      .sort((a, b) => b.count - a.count); // 按剩余次数降序排序
+
+    // 渲染排序后的数据
+    sortedData.forEach(({ id, count }) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${index++}</td>
+        <td>${id}</td>
+        <td>${count}</td>
+        <td class="actions">
+          ${
+            isAdmin
+              ? `<button onclick="changeCount('${id}', 1)">+1</button>
+                 <button onclick="changeCount('${id}', -1)">-1</button>
+                 <button onclick="editFanIdPrompt('${id}')">改ID</button>
+                 <button onclick="deleteFan('${id}')">删除</button>`
+              : `<em>无权限</em>`
+          }
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  const fansRef = ref(db, 'fans');
+  onValue(fansRef, (snapshot) => {
+    const data = snapshot.val() || {};
+    renderTable(data);
+  });
+
+  // 添加粉丝
+  window.addFan = () => {
+    if (!isAdmin) { alert("请先登录管理员账号"); return; }
+    const fanId = document.getElementById("fanId").value.trim();
+    const initial = parseInt(document.getElementById("initialCount").value) || 0;
+    if (!fanId) return alert("请输入粉丝ID");
+    set(ref(db, 'fans/' + fanId), { count: initial });
+    lastAction = { type: 'add', id: fanId }; // 记录添加操作
+    document.getElementById("fanId").value = "";
+    document.getElementById("initialCount").value = "";
+  };
+
+  // 修改剩余次数
+  window.changeCount = (fanId, delta) => {
+    if (!isAdmin) { alert("请先登录管理员账号"); return; }
+    const fanRef = ref(db, 'fans/' + fanId);
+    get(fanRef).then(snap => {
+      if (snap.exists()) {
+        const data = snap.val();
+        const newCount = (data.count || 0) + delta;
+        if (newCount < 0) return;
+        set(fanRef, { count: newCount });
+      }
+    });
+  };
+
+  // 修改粉丝ID
+  window.editFanIdPrompt = (oldId) => {
+    if (!isAdmin) { alert("请先登录管理员账号"); return; }
+    const newId = prompt("请输入新的粉丝ID", oldId);
+    if (!newId || newId === oldId) return;
+    const oldRef = ref(db, 'fans/' + oldId);
+    get(oldRef).then(snap => {
+      if (snap.exists()) {
+        const data = snap.val();
+        set(ref(db, 'fans/' + newId), data);
+        remove(oldRef);
+      }
+    });
+  };
+
+  // 删除粉丝
+  window.deleteFan = (fanId) => {
+    if (!isAdmin) { alert("请先登录管理员账号"); return; }
+    if (confirm(`确定删除粉丝 "${fanId}" 吗？`)) {
+      remove(ref(db, 'fans/' + fanId));
+      lastAction = { type: 'delete', id: fanId }; // 记录删除操作
+    }
+  };
+
+  // 登录
+  window.login = () => {
+    const username = document.getElementById("usernameInput").value.trim();
+    const password = document.getElementById("passwordInput").value;
+    if (username === "kaxiu" && password === "kaxiu") {
+      isAdmin = true;
+      userInfoDiv.textContent = `已登录为管理员：${username}`;
+      adminControlsDiv.style.display = "block";
+      loginSection.querySelector("button:nth-child(3)").style.display = "none"; // 隐藏登录按钮
+      loginSection.querySelector("button:nth-child(4)").style.display = "inline"; // 显示登出按钮
+      renderTable({});
+    } else {
+      alert("用户名或密码错误");
+    }
+  };
+
+  // 登出
+  window.logout = () => {
+    isAdmin = false;
+    userInfoDiv.textContent = "未登录";
+    adminControlsDiv.style.display = "none";
+    loginSection.querySelector("button:nth-child(3)").style.display = "inline"; // 显示登录按钮
+    loginSection.querySelector("button:nth-child(4)").style.display = "none"; // 隐藏登出按钮
+    renderTable({});
+  };
+
+  // 导入 Excel 功能（用 SheetJS）
+  window.importExcel = () => {
+    if (!isAdmin) { alert("请先登录管理员账号"); return; }
+    const fileInput = document.getElementById("excelFile");
+    if (!fileInput.files.length) return alert("请先选择一个Excel文件");
+
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+
+    reader.onload = function(e) {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+
+      get(fansRef).then(snapshot => {
+        const fansData = snapshot.val() || {};
+
+        // 遍历 Excel 数据，逐行处理
+        rows.forEach((row, index) => {
+          if (index === 0) return; // 跳过表头
+          const id = row[1]; // 获取粉丝ID（假设是第二列）
+          const count = parseInt(row[2]) || 0; // 获取剩余次数（假设是第三列）
+
+          if (id) {
+            // 按照原始行号顺序插入数据
+            fansData[id] = { count };
+          }
+        });
+
+        // 更新 Firebase 数据
+        set(fansRef, fansData).then(() => {
+          alert("Excel数据已导入！");
+          fileInput.value = ""; // 清空文件选择框
+        }).catch((error) => {
+          console.error("数据导入失败：", error);
+          alert("数据导入失败，请检查 Excel 文件格式！");
+        });
+      });
+    };
+
+    reader.readAsArrayBuffer(file); // 读取文件内容
+  };
+
+  // 清空所有数据
+  window.clearAllData = () => {
+    if (!isAdmin) { alert("请先登录管理员账号"); return; }
+    if (confirm("确定要清空所有数据吗？")) {
+      set(fansRef, {}).then(() => {
+        alert("所有数据已清空！");
+      }).catch((error) => {
+        console.error("清空数据失败：", error);
+        alert("清空数据失败！");
+      });
+    }
+  };
+
+  // 撤销上次操作
+  window.undo = () => {
+    if (!lastAction) {
+      alert("没有操作可以撤销！");
+      return;
+    }
+    const { type, id } = lastAction;
+    if (type === 'add') {
+      remove(ref(db, 'fans/' + id)).then(() => {
+        alert("已撤销添加操作！");
+        lastAction = null; // 清除操作记录
+      }).catch((error) => {
+        console.error("撤销失败：", error);
+        alert("撤销失败！");
+      });
+    } else if (type === 'delete') {
+      // 撤销删除操作，需再次插入删除的粉丝数据
+      alert("撤销删除操作未实现！");
+    }
+  };
+
+</script>
+
+</body>
+</html>
